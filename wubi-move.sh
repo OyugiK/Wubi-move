@@ -39,9 +39,10 @@ root_disk=                  # path and name of root.disk file
 debug=false                 # Output debug information
 dev=                        # target device for migration
 swapdev=                    # swap device for migration
+synch_target=false          # synchronize previously migrated install
 
 # Literals 
-version=2.0                 # Script version
+version=2.2                 # Script version
 target=/tmp/wubitarget      # target device mountpoint
 root_mount=/tmp/rootdisk    # root.disk mountpoint
 
@@ -81,6 +82,7 @@ Migrate an ubuntu install (wubi or normal) to partition
   --shared-swap           share swap partition with an existing install
   -y, --assume-yes        assume yes to all prompts
   --root-disk=<root.disk> Specify a root.disk file to migrate
+  --synch-target          Synchronize a previously migrated install
 EOF
 } 
 assumptions_notes () 
@@ -152,6 +154,9 @@ for option in "$@"; do
     --root-disk=*)
     root_disk=`echo "$option" | sed 's/--root-disk=//'` ;;
 ### undocumented debug option
+    --synch-target)
+    synch_target=true
+    ;;
     -d | --debug)
     set -x
     debug=true
@@ -416,6 +421,11 @@ pre_checks ()
         exit_script 1
     fi
 
+# set --shared-swap with the synch option
+    if [ -n "$swapdev" ] && [ "$synch_target" = "true" ]; then
+        no_mkswap=true
+    fi
+
 # swap device must be the correct type
     if [ -n "$swapdev" ] && [ ! -b "$swapdev" ]; then
         echo "$0: swapdevice ("$swapdev") is not a block device."            
@@ -537,7 +547,6 @@ pre_checks ()
 ### Check options against type of install
 sanity_checks ()
 {
-
 # try and mount target partition, and ensure that it is empty
 # (note freshly formatted ext2/3/4 contain a single 'lost and found'
 # and freshly formatted ntfs contains a "System Volume Information")
@@ -546,6 +555,12 @@ sanity_checks ()
 # have to format first
     echo ""
     if mount -t auto "$dev" $target 2> /dev/null; then
+        if [ "$synch_target" = "true" ]; then
+           # add checks to make sure it's valid - a synch file is present?
+           umount $target
+           return 0
+        fi
+
         if [ $(ls -1 $target | wc -l) -ne 0 ] ; then
           if [ $(ls -1 $target | wc -l) -gt 1 ] || \
              [ "$(ls $target)" != "lost+found" ]; then
@@ -618,6 +633,20 @@ sanity_checks ()
 ### migration can proceed unattended
 final_questions ()
 {
+    if [ "$synch_target" = "true" ]; then
+      echo "$0: The target on "$dev" will be synchronized."        
+      test_YN "Continue and install Grub2 to "$disk?" (Y/N)"
+      # User pressed N
+      if [ "$?" -eq "1" ]; then
+        echo "$0: User canceled synchronization."
+        exit_script 1 
+      fi
+      # for now default install_grub to true
+      # later check grub-install devices on target and allow override
+      install_grub=true
+      return 0
+    fi
+
     # Already notified grub-legacy users about grub2 upgrade
     if [ "$grub_legacy" = "true" ] ; then
        return 0
@@ -660,6 +689,10 @@ final_questions ()
 # being copied as is.
 format_partition ()
 {
+    if [ "$synch_target" = "true" ]; then
+      return 0
+    fi
+
     if [ "$formatted_dev" != true ] ; then
       formatted_dev="true"
       if [ "$assume_yes" != true ] ; then
@@ -697,7 +730,7 @@ migrate_files ()
     fi
     echo ""
     echo "$0: Copying files - please be patient - this takes some time"
-    rsync -a --exclude="$root"host --exclude="$root"mnt/* --exclude="$root"home/*/.gvfs --exclude="$root"media/*/* --exclude="$root"tmp/* --exclude="$root"proc/* --exclude="$root"sys/* $root $target # let errors show
+    rsync -a --delete --exclude="$root"host --exclude="$root"mnt/* --exclude="$root"home/*/.gvfs --exclude="$root"media/*/* --exclude="$root"tmp/* --exclude="$root"proc/* --exclude="$root"sys/* $root $target # let errors show
     if [ "$?" -ne 0 ]; then
         echo ""
         echo "$0: Copying files failed - user canceled?"
